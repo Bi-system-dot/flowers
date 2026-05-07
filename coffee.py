@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import numpy as np
 from datetime import date, timedelta
 import io
@@ -13,268 +14,238 @@ except ImportError:
     PROPHET_AVAILABLE = False
 
 # === 1. НАСТРОЙКИ СТРАНИЦЫ И COFFEE-ДИЗАЙН ===
-st.set_page_config(page_title="NEXUS | Управление Кофейней", page_icon="☕", layout="wide")
+st.set_page_config(page_title="Горький Кофе | BI Аналитика", page_icon="☕", layout="wide")
 
 st.markdown("""
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@500;700;800&family=Inter:wght@400;500;600&display=swap');
+    
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
-    /* Глубокий темный фон (Эспрессо) */
-    .stApp { background-color: #161210; color: #f5f5f4; font-family: 'Inter', sans-serif; }
     
-    /* Карточки KPI (Glassmorphism с золотым свечением) */
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif !important; color: #f5f5f4 !important; }
+    .stApp { background-color: #161210; } /* Глубокий кофейный фон */
+    [data-testid="stSidebar"] { background-color: #0f0c0a !important; border-right: 1px solid #292524; }
+    
+    label, div[data-testid="stWidgetLabel"] p { color: #d6d3d1 !important; font-size: 14px !important; font-weight: 600 !important; }
+    
     div[data-testid="metric-container"] {
-        background: linear-gradient(145deg, rgba(35, 28, 25, 0.9) 0%, rgba(20, 16, 14, 0.95) 100%);
-        border: 1px solid rgba(245, 158, 11, 0.25);
-        padding: 20px;
-        border-radius: 16px;
-        box-shadow: 0 10px 30px -10px rgba(245, 158, 11, 0.2);
-        transition: all 0.3s ease;
+        background: linear-gradient(145deg, rgba(35, 28, 25, 0.9), rgba(20, 16, 14, 0.95));
+        border: 1px solid rgba(245, 158, 11, 0.25); padding: 20px; border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3); transition: transform 0.2s;
     }
-    div[data-testid="metric-container"]:hover { 
-        transform: translateY(-5px); 
-        border: 1px solid rgba(245, 158, 11, 0.8); 
-        box-shadow: 0 15px 35px -10px rgba(245, 158, 11, 0.4);
-    }
-    [data-testid="stMetricValue"] { font-size: 34px !important; color: #F59E0B !important; font-weight: 800 !important; letter-spacing: -1px;}
-    [data-testid="stMetricLabel"] { color: #d6d3d1 !important; font-weight: 600 !important; font-size: 15px !important; }
+    div[data-testid="metric-container"]:hover { transform: translateY(-5px); border: 1px solid rgba(245, 158, 11, 0.8); }
     
-    /* Плашки Auto-Аналитика */
-    .insight-box { padding: 18px; border-radius: 12px; margin-bottom: 12px; border-left: 5px solid; font-weight: 500; font-size: 15px;}
-    .insight-danger { background: rgba(239, 68, 68, 0.1); border-color: #ef4444; color: #fca5a5; }
-    .insight-warning { background: rgba(245, 158, 11, 0.1); border-color: #f59e0b; color: #fcd34d; }
-    .insight-success { background: rgba(16, 185, 129, 0.1); border-color: #10b981; color: #6ee7b7; }
+    [data-testid="stMetricValue"] { font-family: 'Montserrat', sans-serif !important; font-size: 34px !important; color: #F59E0B !important; font-weight: 800 !important; }
+    [data-testid="stMetricLabel"] p { font-size: 13px !important; color: #a8a29e !important; text-transform: uppercase; letter-spacing: 1px; font-weight: 600 !important;}
     
-    /* Вкладки */
-    .stTabs [data-baseweb="tab-list"] { background-color: transparent; border-bottom: 1px solid #444; }
-    .stTabs [data-baseweb="tab"] { color: #a8a29e; font-weight: 600; padding-top: 15px; padding-bottom: 15px; }
+    .insight-box { padding: 16px; border-radius: 8px; margin-bottom: 12px; border-left: 5px solid; font-size: 15px; background: rgba(255,255,255,0.05); }
+    .insight-danger { border-color: #ef4444; color: #fca5a5;} 
+    .insight-warning { border-color: #f59e0b; color: #fcd34d;} 
+    .insight-success { border-color: #10b981; color: #6ee7b7;}
+    
+    .stTabs [data-baseweb="tab-list"] { background-color: transparent; border-bottom: 1px solid #292524; }
+    .stTabs [data-baseweb="tab"] { color: #a8a29e !important; font-family: 'Montserrat', sans-serif !important; font-weight: 600 !important; font-size: 15px !important; padding: 12px 20px; }
     .stTabs [aria-selected="true"] { color: #F59E0B !important; border-bottom: 3px solid #F59E0B !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# Новая контрастная палитра (Карамель, Сливки, Ягода, Матча, Лаванда, Голубика)
-CUSTOM_COLORS = ["#F59E0B", "#FEF3C7", "#F43F5E", "#10B981", "#8B5CF6", "#38BDF8"]
+CUSTOM_COLORS = ["#F59E0B", "#FEF3C7", "#10B981", "#F43F5E", "#8B5CF6", "#38BDF8"]
 
-# === ОСТАВЛЯЕМ ВЕСЬ БЭКЕНД БЕЗ ИЗМЕНЕНИЙ ===
-def detect_coffee_columns(df):
-    mapping = {'date': None, 'value': None, 'category': None, 'shop': None}
-    cols = [c.lower() for c in df.columns]
-    for i, col in enumerate(cols):
-        if any(w in col for w in ['дат', 'врем', 'date', 'time', 'открыт']): mapping['date'] = df.columns[i]
-        elif any(w in col for w in ['заведен', 'точк', 'касса', 'магазин']): mapping['shop'] = df.columns[i]
-        elif any(w in col for w in ['категор', 'блюд', 'наименован', 'товар']): mapping['category'] = df.columns[i]
-    num_cols = df.select_dtypes(include=[np.number]).columns
-    for col in num_cols:
-        if any(w in col.lower() for w in ['сумм', 'выруч', 'итого', 'оплат', 'total']):
-            mapping['value'] = col
-            break
-    if not mapping['value'] and len(num_cols) > 0: mapping['value'] = num_cols[0]
-    return mapping
-
+# === 2. ГЕНЕРАТОР ПРОДВИНУТЫХ ДАННЫХ ===
 @st.cache_data
 def generate_coffee_demo():
     np.random.seed(42)
     days = pd.date_range(end=date.today(), periods=60)
-    cats = ["Кофе (Классика)", "Авторские напитки", "Выпечка (Круассаны)", "Десерты", "Сэндвичи / Завтраки", "Чай / Матча"]
-    shops = ["Точка: БЦ (Офисы)", "Точка: Парк", "Точка: Спальный р-н"]
+    cats = ["Классика", "Авторский кофе", "Выпечка", "Десерты", "Сэндвичи", "Чай"]
+    staff = ["Бариста: Иван", "Бариста: Анна", "Бариста: Олег", "Стажер: Мария"]
+    
     data = []
-    for _ in range(6000):
-        shop = np.random.choice(shops, p=[0.4, 0.3, 0.3])
+    # 2000 уникальных чеков
+    for i in range(2000):
+        receipt_id = f"CHK-{10000+i}"
         day = np.random.choice(days)
-        if "БЦ" in shop: hour = int(np.random.normal(9, 1.5))
-        elif "Парк" in shop: hour = int(np.random.normal(15, 3))
-        else: hour = int(np.random.normal(12, 4))
+        hour = int(np.random.normal(12, 3))
         hour = max(7, min(22, hour))
         timestamp = pd.Timestamp(day) + pd.Timedelta(hours=hour, minutes=np.random.randint(0, 59))
-        cat = np.random.choice(cats, p=[0.4, 0.15, 0.15, 0.1, 0.1, 0.1])
-        price = np.random.randint(180, 450) if "Кофе" in cat or "Чай" in cat else np.random.randint(250, 600)
-        has_food = "Да" if cat in ["Выпечка (Круассаны)", "Десерты", "Сэндвичи / Завтраки"] else np.random.choice(["Да", "Нет"], p=[0.25, 0.75])
-        data.append({"Дата и Время": timestamp, "Кофейня": shop, "Категория": cat, "Сумма чека": price, "Еда в чеке (Допродажа)": has_food})
+        
+        # Симулируем погоду (от -5 до +25)
+        temp = np.random.randint(-5, 25)
+        is_raining = "Да" if np.random.random() > 0.8 else "Нет"
+        
+        barista = np.random.choice(staff)
+        items_in_check = np.random.choice([1, 2, 3], p=[0.5, 0.3, 0.2]) # UPT логика
+        
+        for _ in range(items_in_check):
+            cat = np.random.choice(cats, p=[0.4, 0.15, 0.15, 0.1, 0.1, 0.1])
+            price = np.random.randint(180, 400)
+            cost = price * np.random.uniform(0.2, 0.45) # Фудкост (20-45%)
+            
+            data.append({
+                "Дата и Время": timestamp, "Чек": receipt_id, "Бариста": barista,
+                "Категория/Товар": cat, "Сумма": price, "Фудкост": cost, 
+                "Погода (°C)": temp, "Осадки": is_raining
+            })
     return pd.DataFrame(data)
 
+def detect_columns(df):
+    cols = [str(c).lower() for c in df.columns]
+    mapping = {k: df.columns[0] for k in ['date', 'receipt', 'staff', 'item', 'rev', 'cost', 'temp', 'rain']}
+    for i, c in enumerate(cols):
+        if any(w in c for w in ['дат', 'врем', 'date']): mapping['date'] = df.columns[i]
+        elif any(w in c for w in ['чек', 'заказ']): mapping['receipt'] = df.columns[i]
+        elif any(w in c for w in ['бариста', 'кассир', 'сотрудник']): mapping['staff'] = df.columns[i]
+        elif any(w in c for w in ['категор', 'товар', 'наименован']): mapping['item'] = df.columns[i]
+        elif any(w in c for w in ['сумм', 'выруч', 'оплат']): mapping['rev'] = df.columns[i]
+        elif any(w in c for w in ['фудкост', 'себест']): mapping['cost'] = df.columns[i]
+        elif any(w in c for w in ['погод', 'темп']): mapping['temp'] = df.columns[i]
+        elif any(w in c for w in ['осадк', 'дождь']): mapping['rain'] = df.columns[i]
+    return mapping
+
+# === 3. САЙДБАР ===
 with st.sidebar:
-    st.markdown("## ☕ NEXUS Coffee")
-    st.markdown("Аналитика сети кофеен")
+    # Персонализация!
+    st.markdown("<h2 style='color:#F59E0B; font-weight:800;'>☕ ГОРЬКИЙ КОФЕ</h2>", unsafe_allow_html=True)
+    st.markdown("<span style='color:#a8a29e; font-size:14px;'>BI-Панель Управления</span>", unsafe_allow_html=True)
     st.markdown("---")
+    
     uploaded_file = st.file_uploader("📂 Загрузить файл (iiko/Excel)", type=['xlsx', 'csv'])
     if uploaded_file is None:
-        st.info("💡 Демо-режим (Сеть из 3 кофеен)")
+        st.info("💡 Включен Демо-режим")
         df_raw = generate_coffee_demo()
     else:
         df_raw = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         st.success("✅ Файл загружен")
 
-    detected = detect_coffee_columns(df_raw)
-    with st.expander("⚙️ Настройка колонок", expanded=False):
-        col_date = st.selectbox("📅 Дата и время:", df_raw.columns, index=df_raw.columns.get_loc(detected['date']) if detected['date'] else 0)
-        col_val = st.selectbox("💰 Сумма чека:", df_raw.columns, index=df_raw.columns.get_loc(detected['value']) if detected['value'] else 0)
-        col_cat = st.selectbox("🥐 Категория:", df_raw.columns, index=df_raw.columns.get_loc(detected['category']) if detected['category'] else 0)
-        shop_opts = ['Без разделения (1 точка)'] + list(df_raw.columns)
-        shop_idx = (df_raw.columns.get_loc(detected['shop']) + 1) if detected['shop'] else 0
-        col_shop = st.selectbox("🏪 Точка продаж:", shop_opts, index=shop_idx)
-        col_food = [c for c in df_raw.columns if 'допродаж' in c.lower() or 'еда' in c.lower()]
-        col_upsell = st.selectbox("🛍️ Метка допродажи (Опц.):", ['Нет'] + list(df_raw.columns), index=df_raw.columns.get_loc(col_food[0])+1 if col_food else 0)
+    det = detect_columns(df_raw)
+    with st.expander("⚙️ Разметка колонок", expanded=False):
+        c_date = st.selectbox("📅 Дата и время", df_raw.columns, index=df_raw.columns.get_loc(det['date']))
+        c_rec = st.selectbox("🧾 Чек", df_raw.columns, index=df_raw.columns.get_loc(det['receipt']))
+        c_staff = st.selectbox("🧑‍🍳 Бариста", df_raw.columns, index=df_raw.columns.get_loc(det['staff']))
+        c_item = st.selectbox("🥐 Категория/Товар", df_raw.columns, index=df_raw.columns.get_loc(det['item']))
+        c_rev = st.selectbox("💰 Сумма", df_raw.columns, index=df_raw.columns.get_loc(det['rev']))
+        c_cost = st.selectbox("📉 Фудкост (Себестоимость)", df_raw.columns, index=df_raw.columns.get_loc(det['cost']))
+        
+        all_cols = ['--- Нет ---'] + list(df_raw.columns)
+        c_temp = st.selectbox("🌡 Погода (°C)", all_cols, index=all_cols.index(det['temp']) if det['temp'] in all_cols else 0)
 
+# Подготовка данных
 df = df_raw.copy()
-df['__Date'] = pd.to_datetime(df[col_date], errors='coerce').dropna()
-df['__Value'] = pd.to_numeric(df[col_val], errors='coerce').fillna(0)
-df['__Category'] = df[col_cat].astype(str)
-df['__Shop'] = df[col_shop].astype(str) if col_shop != 'Без разделения (1 точка)' else 'Главная кофейня'
-df['__Upsell'] = df[col_upsell].astype(str) if col_upsell != 'Нет' else np.random.choice(["Да", "Нет"], p=[0.3, 0.7], size=len(df))
+df['__Date'] = pd.to_datetime(df[c_date], errors='coerce').dropna()
+df['__Receipt'] = df[c_rec].astype(str)
+df['__Staff'] = df[c_staff].astype(str)
+df['__Item'] = df[c_item].astype(str)
+df['__Rev'] = pd.to_numeric(df[c_rev], errors='coerce').fillna(0)
+df['__Cost'] = pd.to_numeric(df[c_cost], errors='coerce').fillna(df['__Rev']*0.3) # Фудкост по умолч. 30%
+if c_temp != '--- Нет ---': df['__Temp'] = pd.to_numeric(df[c_temp], errors='coerce').fillna(15)
 
 df['Date_Only'] = df['__Date'].dt.date
-df['Hour'] = df['__Date'].dt.hour
-df['Day_Name'] = df['__Date'].dt.day_name()
 
 with st.sidebar:
     st.markdown("---")
-    st.subheader("🎯 Фильтры")
+    st.markdown("🎯 **Фильтры**")
     min_d, max_d = df['Date_Only'].min(), df['Date_Only'].max()
     date_range = st.date_input("Период", [min_d, max_d], min_value=min_d, max_value=max_d)
-    selected_shops = st.multiselect("Кофейни", options=df['__Shop'].unique(), default=df['__Shop'].unique())
-    st.markdown("---")
-    st.subheader("🥐 Списания витрины (Брак)")
-    spoil_pct = st.slider("% вечерних списаний", 0.0, 15.0, 6.0, 0.5)
 
 if len(date_range) == 2: df_f = df[(df['Date_Only'] >= date_range[0]) & (df['Date_Only'] <= date_range[1])]
 else: df_f = df.copy()
-if selected_shops: df_f = df_f[df_f['__Shop'].isin(selected_shops)]
 
-# === 5. ИНТЕРФЕЙС И ГРАФИКИ (ОБНОВЛЕННЫЙ ДИЗАЙН) ===
-st.title("☕ Дашборд Владельца Кофейни")
+# === 4. ИНТЕРФЕЙС ===
+st.title("Операционная Аналитика")
 
-total_rev = df_f['__Value'].sum()
-total_checks = len(df_f)
-avg_check = total_rev / total_checks if total_checks > 0 else 0
-upsell_rate = (len(df_f[df_f['__Upsell'].isin(['Да', 'Yes', 'True', '1'])]) / total_checks) * 100 if total_checks > 0 else 0
-spoilage_lost = total_rev * (spoil_pct / 100)
+total_rev = df_f['__Rev'].sum()
+total_margin = total_rev - df_f['__Cost'].sum()
+unique_receipts = df_f['__Receipt'].nunique()
+avg_check = total_rev / unique_receipts if unique_receipts > 0 else 0
+upt = len(df_f) / unique_receipts if unique_receipts > 0 else 0
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("💰 Выручка", f"{int(total_rev):,} ₽".replace(",", " "))
-c2.metric("💳 Средний чек", f"{int(avg_check):,} ₽".replace(",", " "))
-c3.metric("📈 Допродажи (Еда)", f"{upsell_rate:.1f}%")
-c4.metric("🗑️ Убытки (Списание)", f"- {int(spoilage_lost):,} ₽".replace(",", " "))
+c2.metric("✨ Маржинальная прибыль", f"{int(total_margin):,} ₽".replace(",", " "))
+c3.metric("💳 Средний чек", f"{int(avg_check):,} ₽".replace(",", " "))
+c4.metric("📈 UPT (Позиций в чеке)", f"{upt:.2f} шт")
 
-insights = ""
-if upsell_rate < 35:
-    insights += f"<div class='insight-box insight-danger'>🚨 <b>Провал в допродажах:</b> {100-upsell_rate:.1f}% гостей берут ТОЛЬКО напиток. Бариста не предлагают десерты. Вы теряете прибыль!</div>"
-else:
-    insights += f"<div class='insight-box insight-success'>✨ <b>Отличные допродажи:</b> Бариста активно продают витрину. Так держать!</div>"
-if spoil_pct > 5:
-    insights += f"<div class='insight-box insight-warning'>⚠️ <b>Слишком много списаний:</b> Вы выбросили круассанов на {int(spoilage_lost):,} ₽. ИИ-прогноз поможет оптимизировать заказ.</div>"
-
-st.markdown(insights, unsafe_allow_html=True)
+# Авто-Инсайты
+html = ""
+if upt < 1.3: html += f"<div class='insight-box insight-danger'>🚨 <b>Слабые допродажи!</b> UPT = {upt:.2f}. Большинство гостей берут только 1 напиток и уходят без десерта. Проведите тренинг с бариста.</div>"
+margin_pct = (total_margin / total_rev) * 100
+if margin_pct < 60: html += f"<div class='insight-box insight-warning'>⚠️ <b>Высокий фудкост:</b> Ваша рентабельность по сырью упала до {margin_pct:.1f}%. Проверьте списания и рецептуры.</div>"
+else: html += f"<div class='insight-box insight-success'>💎 <b>Здоровый фудкост:</b> Маржа {margin_pct:.1f}%. Отличный показатель для кофейни.</div>"
+st.markdown(html, unsafe_allow_html=True)
 st.markdown("<br>", unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["🕒 Нагрузка (Графики бариста)", "🥐 Аналитика Меню", "🧠 ИИ-Прогноз заготовок"])
+# ВКЛАДКИ (То, что мы продаем в скрипте)
+tab1, tab2, tab3, tab4 = st.tabs(["🌤 Погода и Спрос", "🧑‍🍳 Матрица Бариста (Допродажи)", "🎯 Инжиниринг Меню", "🔮 ИИ-Прогноз Выручки"])
 
-# Белый/Светло-бежевый цвет для всего текста на графиках
-TEXT_COLOR = "#f5f5f4"
-PLOTLY_FONT = dict(family="Inter, sans-serif", size=13, color=TEXT_COLOR)
+PLOTLY_FONT = dict(family="Inter", size=13, color="#f5f5f4")
 
-# --- ВКЛАДКА 1: ТЕПЛОВАЯ КАРТА ---
+# --- ВКЛАДКА 1: ПОГОДА (KILLER FEATURE) ---
 with tab1:
-    st.subheader("👥 Пиковые часы (Очереди)")
-    st.markdown("<span style='color:#a8a29e'>Яркие квадраты — часы пик. Если бариста работает один, клиенты разворачиваются и уходят.</span>", unsafe_allow_html=True)
+    st.subheader("Как погода влияет на вашу кассу?")
+    st.markdown("<span style='color:#a8a29e'>Корреляция между температурой на улице и суммарной выручкой. Помогает планировать заготовки выпечки и стоп-листы.</span>", unsafe_allow_html=True)
     
-    if df_f['Hour'].nunique() > 1:
-        pivot_hours = df_f.groupby(['Day_Name', 'Hour']).size().reset_index(name='Чеков')
-        days_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        rus_days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    if c_temp != '--- Нет ---':
+        weather_df = df_f.groupby('Date_Only').agg(Rev=('__Rev', 'sum'), Temp=('__Temp', 'mean')).reset_index()
+        fig_w = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_w.add_trace(go.Bar(x=weather_df['Date_Only'], y=weather_df['Rev'], name="Выручка (₽)", marker_color="#F59E0B", opacity=0.8), secondary_y=False)
+        fig_w.add_trace(go.Scatter(x=weather_df['Date_Only'], y=weather_df['Temp'], name="Температура (°C)", mode="lines+markers", marker_color="#10B981", line=dict(width=3)), secondary_y=True)
         
-        pivot_hours['Day_Name'] = pivot_hours['Day_Name'].map(dict(zip(days_order, rus_days)))
-        heatmap_data = pivot_hours.pivot(index='Day_Name', columns='Hour', values='Чеков').fillna(0).reindex(rus_days)
-        
-        fig_heat = px.imshow(heatmap_data, text_auto=".0f", color_continuous_scale="solar", aspect="auto",
-                             labels=dict(x="Время суток (Часы)", y="", color="Пробито чеков"))
-        
-        fig_heat.update_layout(
-            template="plotly_dark", 
-            plot_bgcolor='rgba(0,0,0,0)', 
-            paper_bgcolor='rgba(0,0,0,0)',
-            font=PLOTLY_FONT,
-            xaxis=dict(tickfont=dict(color=TEXT_COLOR), title_font=dict(color=TEXT_COLOR)),
-            yaxis=dict(tickfont=dict(color=TEXT_COLOR)),
-            margin=dict(l=0, r=0, t=10, b=0)
-        )
-        # Отключаем принудительную тему Streamlit через theme=None
-        st.plotly_chart(fig_heat, use_container_width=True, theme=None)
-    else: 
-        st.warning("⚠️ В данных нет времени пробития чеков.")
+        fig_w.update_layout(template="plotly_dark", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=PLOTLY_FONT, legend=dict(font=dict(color="#fff")))
+        fig_w.update_yaxes(title_text="Выручка", secondary_y=False, tickfont=dict(color="#F59E0B"))
+        fig_w.update_yaxes(title_text="Температура (°C)", secondary_y=True, tickfont=dict(color="#10B981"))
+        st.plotly_chart(fig_w, use_container_width=True, theme=None)
+    else:
+        st.warning("Загрузите данные с колонкой температуры.")
 
-# --- ВКЛАДКА 2: МЕНЮ И ТОЧКИ ---
+# --- ВКЛАДКА 2: МАТРИЦА БАРИСТА (KILLER FEATURE) ---
 with tab2:
-    col_cats, col_shops = st.columns(2)
+    st.subheader("Кто из персонала Кассир, а кто — Продавец?")
+    st.markdown("<span style='color:#a8a29e'>Оценка по UPT (Кол-во позиций в чеке). Если бариста в левом нижнем углу — он просто пробивает эспрессо. Ищите тех, кто справа сверху!</span>", unsafe_allow_html=True)
     
-    with col_cats:
-        st.subheader("🍩 Структура продаж")
-        cat_sales = df_f.groupby('__Category')['__Value'].sum().reset_index().sort_values('__Value', ascending=False)
-        fig_cats = px.pie(cat_sales, names='__Category', values='__Value', hole=0.65, 
-                          color_discrete_sequence=CUSTOM_COLORS)
-        
-        fig_cats.update_layout(
-            template="plotly_dark",
-            plot_bgcolor='rgba(0,0,0,0)', 
-            paper_bgcolor='rgba(0,0,0,0)', 
-            font=PLOTLY_FONT,
-            # Явно красим легенду в белый цвет
-            legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5, font=dict(color=TEXT_COLOR)), 
-            margin=dict(t=10, b=10, l=0, r=0)
-        )
-        fig_cats.update_traces(textinfo='percent', textfont_size=14, hovertemplate="%{label}: %{value:,.0f} ₽")
-        st.plotly_chart(fig_cats, use_container_width=True, theme=None)
+    staff_df = df_f.groupby('__Staff').agg(Rev=('__Rev', 'sum'), Checks=('__Receipt', 'nunique'), Items=('__Item', 'count')).reset_index()
+    staff_df['Avg_Check'] = staff_df['Rev'] / staff_df['Checks']
+    staff_df['UPT'] = staff_df['Items'] / staff_df['Checks']
+    
+    fig_staff = px.scatter(staff_df, x='UPT', y='Avg_Check', size='Rev', color='__Staff', text='__Staff', color_discrete_sequence=CUSTOM_COLORS)
+    fig_staff.update_traces(textposition='top center', textfont=dict(size=14, family="Inter", color="white"))
+    fig_staff.update_layout(template="plotly_dark", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=PLOTLY_FONT, xaxis_title="UPT (Допродажи в чеке)", yaxis_title="Средний Чек (₽)", showlegend=False)
+    st.plotly_chart(fig_staff, use_container_width=True, theme=None)
 
-    with col_shops:
-        st.subheader("🏪 Выручка по филиалам")
-        shop_sales = df_f.groupby('__Shop')['__Value'].sum().reset_index().sort_values('__Value', ascending=True)
-        fig_shops = px.bar(shop_sales, x='__Value', y='__Shop', orientation='h', 
-                           color='__Shop', color_discrete_sequence=CUSTOM_COLORS)
-        
-        fig_shops.update_layout(
-            template="plotly_dark",
-            showlegend=False, 
-            plot_bgcolor='rgba(0,0,0,0)', 
-            paper_bgcolor='rgba(0,0,0,0)', 
-            font=PLOTLY_FONT,
-            # Убираем технические названия осей (title="") и красим цифры в белый
-            xaxis=dict(showgrid=False, title="", tickfont=dict(color=TEXT_COLOR)), 
-            yaxis=dict(showgrid=False, title="", tickfont=dict(color=TEXT_COLOR)),
-            margin=dict(t=10, b=10, l=0, r=0)
-        )
-        fig_shops.update_traces(width=0.4) 
-        st.plotly_chart(fig_shops, use_container_width=True, theme=None)
-
-# --- ВКЛАДКА 3: MACHINE LEARNING ---
+# --- ВКЛАДКА 3: ИНЖИНИРИНГ МЕНЮ (KILLER FEATURE) ---
 with tab3:
-    st.subheader("🔮 ИИ-Прогноз спроса (Для заготовок)")
-    st.markdown("<span style='color:#a8a29e'>Помогает понять, сколько молока заказывать и сколько выпечки дефростировать на завтра.</span>", unsafe_allow_html=True)
+    st.subheader("Оптимизация Меню (Поиск 'Собак' и 'Звезд')")
+    st.markdown("<span style='color:#a8a29e'>Мы разбили ваше меню на основе <b>Маржинальности</b> (Чистая прибыль минус фудкост). Избавляйтесь от группы С.</span>", unsafe_allow_html=True)
     
-    df_prophet = df_f.groupby('Date_Only')["__Value"].sum().reset_index()
+    menu_df = df_f.groupby('__Item').agg(Rev=('__Rev', 'sum'), Cost=('__Cost', 'sum'), Qty=('__Item', 'count')).reset_index()
+    menu_df['Margin'] = menu_df['Rev'] - menu_df['Cost']
+    menu_df = menu_df.sort_values('Margin', ascending=False)
+    
+    menu_df['Доля %'] = (menu_df['Margin'] / menu_df['Margin'].sum()) * 100
+    menu_df['Класс'] = np.where(menu_df['Доля %'].cumsum() <= 80, 'A (Звезды - Продвигать)', np.where(menu_df['Доля %'].cumsum() <= 95, 'B (Рабочие лошадки)', 'C (Собаки - Убрать из меню)'))
+    
+    def color_menu(val):
+        if 'A' in val: return 'color: #10B981; font-weight:bold;'
+        elif 'C' in val: return 'color: #ef4444; font-weight:bold;'
+        return 'color: #F59E0B;'
+        
+    try: st.dataframe(menu_df[['__Item', 'Margin', 'Qty', 'Класс']].rename(columns={'__Item': 'Позиция', 'Margin': 'Валовая Маржа (₽)', 'Qty': 'Продано (шт)'}).style.map(color_menu, subset=['Класс']), hide_index=True, use_container_width=True)
+    except: st.dataframe(menu_df[['__Item', 'Margin', 'Qty', 'Класс']].rename(columns={'__Item': 'Позиция', 'Margin': 'Валовая Маржа (₽)', 'Qty': 'Продано (шт)'}).style.applymap(color_menu, subset=['Класс']), hide_index=True, use_container_width=True)
+
+# --- ВКЛАДКА 4: ML-ПРОГНОЗ ---
+with tab4:
+    st.subheader("ИИ-Прогноз спроса (Для Закупок)")
+    df_prophet = df_f.groupby('Date_Only')["__Rev"].sum().reset_index()
     df_prophet.columns = ['ds', 'y']
     
     if PROPHET_AVAILABLE and len(df_prophet) > 14:
-        with st.spinner("Анализируем тренды..."):
-            m = Prophet(yearly_seasonality=False, daily_seasonality=False)
-            m.fit(df_prophet)
-            future = m.make_future_dataframe(periods=14)
-            forecast = m.predict(future)
-            
-            fig_ml = go.Figure()
-            fig_ml.add_trace(go.Scatter(x=df_prophet['ds'], y=df_prophet['y'], mode='lines', name='Факт', line=dict(color='#F59E0B', width=3, shape='spline')))
-            fig_ml.add_trace(go.Scatter(x=forecast['ds'].iloc[-14:], y=forecast['yhat'].iloc[-14:], mode='lines', name='Прогноз', line=dict(color='#10B981', width=3, dash='dash', shape='spline')))
-            fig_ml.add_trace(go.Scatter(x=forecast['ds'].iloc[-14:], y=forecast['yhat_upper'].iloc[-14:], mode='lines', line=dict(width=0), showlegend=False))
-            fig_ml.add_trace(go.Scatter(x=forecast['ds'].iloc[-14:], y=forecast['yhat_lower'].iloc[-14:], fill='tonexty', mode='lines', line=dict(width=0), fillcolor='rgba(16, 185, 129, 0.15)', name='Дов. интервал'))
-            
-            fig_ml.update_layout(
-                template="plotly_dark", 
-                plot_bgcolor='rgba(0,0,0,0)', 
-                paper_bgcolor='rgba(0,0,0,0)', 
-                font=PLOTLY_FONT,
-                hovermode="x unified",
-                # Красим легенду и оси в белый
-                legend=dict(font=dict(color=TEXT_COLOR)),
-                xaxis=dict(showgrid=False, title="", tickfont=dict(color=TEXT_COLOR)), 
-                yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.05)", title="", tickfont=dict(color=TEXT_COLOR))
-            )
-            st.plotly_chart(fig_ml, use_container_width=True, theme=None)
+        m = Prophet(yearly_seasonality=False, daily_seasonality=False)
+        m.fit(df_prophet)
+        forecast = m.predict(m.make_future_dataframe(periods=14))
+        
+        fig_ml = go.Figure()
+        fig_ml.add_trace(go.Scatter(x=df_prophet['ds'], y=df_prophet['y'], mode='lines', name='Факт', line=dict(color='#F59E0B', width=3)))
+        fig_ml.add_trace(go.Scatter(x=forecast['ds'].iloc[-14:], y=forecast['yhat'].iloc[-14:], mode='lines', name='Прогноз', line=dict(color='#10B981', width=3, dash='dash')))
+        
+        fig_ml.update_layout(template="plotly_dark", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=PLOTLY_FONT, hovermode="x unified", legend=dict(font=dict(color="#fff")))
+        st.plotly_chart(fig_ml, use_container_width=True, theme=None)
     else:
         st.info("💡 Недостаточно данных для прогноза (нужно > 14 дней).")
